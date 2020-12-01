@@ -380,7 +380,7 @@ npm run serve
       activated--->page-a
       ```
 
-      `home` 页面触发了 `destoryed` 直接销毁了，然后触发了`pageA` 页面的 `created` 方法。
+      `home` 页面触发了 `deactivated` 变成非活跃状态，然后触发了`pageA` 页面的 `activated` 方法。
 
    3.  `pageA` 页面 ---> `pageB` 页面
 
@@ -390,7 +390,7 @@ npm run serve
       activated--->page-b
       ```
 
-      `pageA` 页面触发了 `destoryed` 直接销毁了，然后触发了`pageB` 页面的 `created` 方法。
+      `pageA` 页面触发了 `deactivated` 变成非活跃状态，然后触发了`pageB` 页面的 `activated` 方法。
 
    4. `pageB` 页面返回
 
@@ -399,7 +399,7 @@ npm run serve
       activated--->page-a
       ```
 
-      `pageB` 页面触发了 `destoryed` 直接销毁了，然后触发了`pageA` 页面的 `created` 方法。
+      `pageB` 页面触发了 `deactivated` 变成非活跃状态，然后触发了`pageA` 页面的 `activated` 方法。
 
    5. `pageA` 页面返回
 
@@ -445,4 +445,72 @@ npm run serve
    ...
    ```
 
-到这里我们思考一个问题，`<keep-alive>` 是会帮我们缓存组件，但是缓存的数量小倒还好，数量大了就有点得不偿失了，所以 vue 考虑到这个情况了，
+到这里我们思考一个问题，`<keep-alive>` 是会帮我们缓存组件，但是缓存的数量小倒还好，数量大了就有点得不偿失了，所以 vue 考虑到这个情况了，然后给`<keep-alive>` 添加了一个 `max` 属性，比如我们只需要缓存一个页面，我们只需要设置 `:max=1` 即可：
+
+```vue
+..
+<template>
+  <div id="app">
+    <keep-alive :max="1">
+      <router-view/>
+    </keep-alive>
+  </div>
+</template>
+...
+```
+
+`<keep-alive>` 每次会缓存最新的那个页面：
+
+1. 首页打开 `home` 页面
+
+   ```js
+   created--->home
+   activated--->home
+   ```
+
+   直接触发了 `home` 页面的 `created` 方法。
+
+2. `home` 页面 ---> `pageA` 页面
+
+   ```bash
+   created--->page-a
+   deactivated--->home
+   activated--->page-a
+   ```
+
+   `home` 页面触发了 `deactivated` 变成了非活跃状态，然后触发了`pageA` 页面的 `created` 方法。
+
+3. `pageA` 页面点击返回
+
+   ```bash
+   created--->home
+   deactivated--->page-a
+   activated--->home
+   ```
+
+   `pageA` 页面触发了 `deactivated` 变成了非活跃状态，然后触发了`home` 页面的 `created` 方法。
+
+每次都移除数据的第 0 个位置的缓存，源码为：
+
+```js
+// 如果缓存数 > 最大缓存数，移除缓存数组的第 0 位置数据
+if (this.max && keys.length > parseInt(this.max)) { 
+          pruneCacheEntry(cache, keys[0], keys, this._vnode)
+}
+...
+function pruneCacheEntry (
+  cache: VNodeCache,
+  key: string,
+  keys: Array<string>,
+  current?: VNode
+) {
+  const cached = cache[key] // 获取需要移除的缓存页面
+  if (cached && (!current || cached.tag !== current.tag)) { // 如果当前页面跟缓存的页面不一致的时候
+    // 触发移除的缓存页面的 destroy 方法
+    cached.componentInstance.$destroy()
+  }
+  cache[key] = null
+  remove(keys, key)
+}
+```
+

@@ -20,7 +20,7 @@ export default new Router({
     {
       path: "/pageB",
       name: "pageB",
-      component: () => import(/* webpackChunkName: "about" */ './views/A.vue')
+      component: () => import(/* webpackChunkName: "about" */ './views/B.vue')
     }
   ]
 })
