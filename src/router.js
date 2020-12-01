@@ -11,6 +11,18 @@ export default new Router({
       path: '/',
       name: 'home',
       component: Home,
+      children: [
+        {
+          path: 'home1',
+          name: 'home1',
+          component: () => import(/* webpackChunkName: "about" */ './views/Home1.vue'),
+        },
+        {
+          path: 'home2',
+          name: 'home2',
+          component: () => import(/* webpackChunkName: "about" */ './views/Home2.vue'),
+        }
+      ]
     },
     {
       path: "/pageA",
@@ -20,7 +32,7 @@ export default new Router({
     {
       path: "/pageB",
       name: "pageB",
-      component: () => import(/* webpackChunkName: "about" */ './views/B.vue')
+      component: () => import(/* webpackChunkName: "about" */ './views/A.vue')
     }
   ]
 })

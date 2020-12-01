@@ -468,7 +468,7 @@ npm run serve
    activated--->home
    ```
 
-   直接触发了 `home` 页面的 `created` 方法。
+   直接触发了 `home` 页面的 `created` 方法新创建了一个页面，然后调用了 `activated` 方法激活了当前页面。
 
 2. `home` 页面 ---> `pageA` 页面
 
@@ -478,7 +478,7 @@ npm run serve
    activated--->page-a
    ```
 
-   `home` 页面触发了 `deactivated` 变成了非活跃状态，然后触发了`pageA` 页面的 `created` 方法。
+   `home` 页面触发了 `deactivated` 变成了非活跃状态，然后触发了`pageA` 页面的 `created` 方法新创建了一个页面，然后调用了 `activated` 方法激活了当前页面。
 
 3. `pageA` 页面点击返回
 
@@ -488,9 +488,9 @@ npm run serve
    activated--->home
    ```
 
-   `pageA` 页面触发了 `deactivated` 变成了非活跃状态，然后触发了`home` 页面的 `created` 方法。
+   `pageA` 页面触发了 `deactivated` 变成了非活跃状态，然后触发了`home` 页面的 `created` 方法新创建了一个页面，然后调用了 `activated` 方法激活了当前页面。
 
-每次都移除数据的第 0 个位置的缓存，源码为：
+当缓存页面的个数大于最大限制的时候，每次都移除数据的第 0 个位置的缓存，源码为：
 
 ```js
 // 如果缓存数 > 最大缓存数，移除缓存数组的第 0 位置数据
@@ -514,3 +514,680 @@ function pruneCacheEntry (
 }
 ```
 
+比如当 `:max="2"` 的时候，home ---> pageA ---> pageB，当进入 pageB 的时候，home 页面就会被销毁，会触发 home 页面的 `destroyed` 方法。
+
+到这里 `<keep-alive>` 组件的基本用法我们算是 ok 了，我们解析来分析一下项目中会经常遇到的一些问题。
+
+#### activated 生命周期
+
+通过上面的 demo 我们可以知道，当页面被激活的时候会触发当前页面的 `activated` 方法，那么 vue 是在什么时候才会去触发这个方法呢？
+
+我们找到 vue 源码位置 `/vue/src/core/vdom/create-component.js`:
+
+```js
+...
+insert (vnode: MountedComponentVNode) {
+    const { context, componentInstance } = vnode
+    if (!componentInstance._isMounted) {
+      componentInstance._isMounted = true
+      callHook(componentInstance, 'mounted')
+    }
+    if (vnode.data.keepAlive) {
+      if (context._isMounted) {
+        // vue-router#1212
+        // 在更新过程中，一个缓存的页面的子组件可能还会改变，
+        // 当前的子组件并不一定就是最后的子组件，所以这个时候去调用 activaved 方法会不准确
+        // 当页面都组件更新完毕之后再去调用。
+        queueActivatedComponent(componentInstance)
+      } else {
+        // 递归激活所有子组件
+        activateChildComponent(componentInstance, true /* direct */)
+      }
+    }
+  },
+    ...
+export function activateChildComponent (vm: Component, direct?: boolean) {
+  if (direct) {
+    vm._directInactive = false
+    if (isInInactiveTree(vm)) {
+      return
+    }
+  } else if (vm._directInactive) {
+    return
+  }
+  if (vm._inactive || vm._inactive === null) {
+    vm._inactive = false
+    // 先循环调用所有子组件的 activated 方法
+    for (let i = 0; i < vm.$children.length; i++) {
+      activateChildComponent(vm.$children[i])
+    }
+    // 再调用当前组件的 activated 方法
+    callHook(vm, 'activated')
+  }
+}
+```
+
+当前 `vnode` 节点被插入的时候会判断当前 `vnode` 节点 `data` 上是不是有 `keepAlive` 标记，有的话就会激活自身和自己所有的子组件，通过源码我们还发现，当组件第一次创建的时候 `activated` 方法是在 `mounted` 方法之后执行。
+
+#### deactivated 生命周期
+
+通过上面的 demo 我们可以知道，当页面被隐藏的时候会触发当前页面的 `deactivated` 方法，那么 vue 是在什么时候才会去触发这个方法呢？
+
+跟 `activated` 方法一样，我们找到 vue 源码位置 `/vue/src/core/vdom/create-component.js`:
+
+```js
+...
+destroy (vnode: MountedComponentVNode) {
+    const { componentInstance } = vnode
+    if (!componentInstance._isDestroyed) {
+      if (!vnode.data.keepAlive) {
+        componentInstance.$destroy()
+      } else {
+        deactivateChildComponent(componentInstance, true /* direct */)
+      }
+    }
+  }
+...
+export function deactivateChildComponent (vm: Component, direct?: boolean) {
+  if (direct) {
+    vm._directInactive = true
+    if (isInInactiveTree(vm)) {
+      return
+    }
+  }
+  if (!vm._inactive) {
+    vm._inactive = true
+    for (let i = 0; i < vm.$children.length; i++) {
+      deactivateChildComponent(vm.$children[i])
+    }
+    callHook(vm, 'deactivated')
+  }
+}
+```
+
+当前`vnode` 节点被销毁的时候，会判断当前节点是不是有 `keepAlive` 标记，有的话就不会直接调用组件的 `destroyed` 了，而是直接调用组件的 `deactivated` 方法。
+
+那么节点的 `keepAlive` 是啥时候被标记的呢？还记得我们的 `<keep-alive>` 组件的源码不？
+
+`vue/src/core/components/keep-alive.js`:
+
+```js
+...
+render () {
+    ...
+      vnode.data.keepAlive = true // 标记该节点为 keepAlive 类型
+    }
+    return vnode || (slot && slot[0])
+  }
+...
+```
+
+ok！看到这里是不是就一目了然了呢？
+
+## router-view
+
+`router-view` 组件的基本用法跟原理我就不在这里解析了，感兴趣的童鞋可以去看 [官网](https://router.vuejs.org/zh/guide/essentials/dynamic-matching.html#%E5%93%8D%E5%BA%94%E8%B7%AF%E7%94%B1%E5%8F%82%E6%95%B0%E7%9A%84%E5%8F%98%E5%8C%96) ，也可以去看我之前的一些文章 [前端入门之(vue-router全解析二)](https://vvbug.blog.csdn.net/article/details/82766049)。
+
+我们看一下`router-view` 组件中的源码：
+
+```js
+import { warn } from '../util/warn'
+import { extend } from '../util/misc'
+import { handleRouteEntered } from '../util/route'
+
+export default {
+  name: 'RouterView',
+  functional: true,
+  props: {
+    name: {
+      type: String,
+      default: 'default'
+    }
+  },
+  render (_, { props, children, parent, data }) {
+    // used by devtools to display a router-view badge
+    data.routerView = true
+
+    // directly use parent context's createElement() function
+    // so that components rendered by router-view can resolve named slots
+    const h = parent.$createElement
+    const name = props.name
+    const route = parent.$route
+    const cache = parent._routerViewCache || (parent._routerViewCache = {})
+
+    // determine current view depth, also check to see if the tree
+    // has been toggled inactive but kept-alive.
+    let depth = 0
+    let inactive = false
+    while (parent && parent._routerRoot !== parent) {
+      const vnodeData = parent.$vnode ? parent.$vnode.data : {}
+      if (vnodeData.routerView) {
+        depth++
+      }
+      if (vnodeData.keepAlive && parent._directInactive && parent._inactive) {
+        inactive = true
+      }
+      parent = parent.$parent
+    }
+    data.routerViewDepth = depth
+
+    // render previous view if the tree is inactive and kept-alive
+    if (inactive) {
+      const cachedData = cache[name]
+      const cachedComponent = cachedData && cachedData.component
+      if (cachedComponent) {
+        // #2301
+        // pass props
+        if (cachedData.configProps) {
+          fillPropsinData(cachedComponent, data, cachedData.route, cachedData.configProps)
+        }
+        return h(cachedComponent, data, children)
+      } else {
+        // render previous empty view
+        return h()
+      }
+    }
+
+    const matched = route.matched[depth]
+    const component = matched && matched.components[name]
+
+    // render empty node if no matched route or no config component
+    if (!matched || !component) {
+      cache[name] = null
+      return h()
+    }
+
+    // cache component
+    cache[name] = { component }
+
+    // attach instance registration hook
+    // this will be called in the instance's injected lifecycle hooks
+    data.registerRouteInstance = (vm, val) => {
+      // val could be undefined for unregistration
+      const current = matched.instances[name]
+      if (
+        (val && current !== vm) ||
+        (!val && current === vm)
+      ) {
+        matched.instances[name] = val
+      }
+    }
+
+    // also register instance in prepatch hook
+    // in case the same component instance is reused across different routes
+    ;(data.hook || (data.hook = {})).prepatch = (_, vnode) => {
+      matched.instances[name] = vnode.componentInstance
+    }
+
+    // register instance in init hook
+    // in case kept-alive component be actived when routes changed
+    data.hook.init = (vnode) => {
+      if (vnode.data.keepAlive &&
+        vnode.componentInstance &&
+        vnode.componentInstance !== matched.instances[name]
+      ) {
+        matched.instances[name] = vnode.componentInstance
+      }
+
+      // if the route transition has already been confirmed then we weren't
+      // able to call the cbs during confirmation as the component was not
+      // registered yet, so we call it here.
+      handleRouteEntered(route)
+    }
+
+    const configProps = matched.props && matched.props[name]
+    // save route and configProps in cache
+    if (configProps) {
+      extend(cache[name], {
+        route,
+        configProps
+      })
+      fillPropsinData(component, data, route, configProps)
+    }
+
+    return h(component, data, children)
+  }
+}
+
+function fillPropsinData (component, data, route, configProps) {
+  // resolve props
+  let propsToPass = data.props = resolveProps(route, configProps)
+  if (propsToPass) {
+    // clone to prevent mutation
+    propsToPass = data.props = extend({}, propsToPass)
+    // pass non-declared props as attrs
+    const attrs = data.attrs = data.attrs || {}
+    for (const key in propsToPass) {
+      if (!component.props || !(key in component.props)) {
+        attrs[key] = propsToPass[key]
+        delete propsToPass[key]
+      }
+    }
+  }
+}
+
+function resolveProps (route, config) {
+  switch (typeof config) {
+    case 'undefined':
+      return
+    case 'object':
+      return config
+    case 'function':
+      return config(route)
+    case 'boolean':
+      return config ? route.params : undefined
+    default:
+      if (process.env.NODE_ENV !== 'production') {
+        warn(
+          false,
+          `props in "${route.path}" is a ${typeof config}, ` +
+          `expecting an object, function or boolean.`
+        )
+      }
+  }
+}
+
+```
+
+很简单，我就不一一解析了，我们重点看一下 `render` 方法中的这一段代码：
+
+```js
+...
+ render (_, { props, children, parent, data }) {
+  ...
+   while (parent && parent._routerRoot !== parent) {
+      const vnodeData = parent.$vnode ? parent.$vnode.data : {}
+      // 获取当前页面的层级数（嵌套路由情况）
+      if (vnodeData.routerView) {
+        depth++
+      }
+      if (vnodeData.keepAlive && parent._directInactive && parent._inactive) {
+        inactive = true
+      }
+      parent = parent.$parent
+    }
+    data.routerViewDepth = depth
+
+    // render previous view if the tree is inactive and kept-alive
+  	// 如果父组件为非激活状态并且是被缓存的时候，就去渲染之前的组件
+    if (inactive) {
+      const cachedData = cache[name]
+      const cachedComponent = cachedData && cachedData.component
+      if (cachedComponent) {
+        // #2301
+        // pass props
+        if (cachedData.configProps) {
+          fillPropsinData(cachedComponent, data, cachedData.route, cachedData.configProps)
+        }
+        return h(cachedComponent, data, children)
+      } else {
+        // render previous empty view
+        return h()
+      }
+    }
+ }
+...
+```
+
+代码现在可能不太好理解，我们还是利用 Demo 来实现一下这个场景。
+
+```js
+/**
+/
++------------------+                  
+| Home             |                  
+| +--------------+ |                  
+| | home1   home2  |              
+| |              | |                 
+| +--------------+ |                 
++------------------+
+首页下面有两个嵌套路由 home1 跟 home2
+
+/pageA
+pageA 跟首页平级	
+
+/pageB
+pageB 跟首页平级	
+
+*/
+```
+
+首先创建一个 `Home1.vue` 页面：
+
+```vue
+<template>
+  <div class="about">
+    <h1>我是 home1</h1>
+  </div>
+</template>
+<script>
+  import LifeRecycle from "../life-recycle";
+  export default {
+    name: "home1",
+    mixins:[LifeRecycle]
+  }
+</script>
+
+```
+
+然后创建一个 `Home2.vue` 页面：
+
+```vue
+<template>
+  <div class="about">
+    <h1>我是 home2</h1>
+  </div>
+</template>
+<script>
+  import LifeRecycle from "../life-recycle";
+  export default {
+    name: "home2",
+    mixins:[LifeRecycle]
+  }
+</script>
+
+```
+
+然后修改一下 `Home` 页面，为其添加一个子路由：
+
+```vue
+<template>
+    <div class="home">
+        <h1>我是首页</h1>
+        <router-link to="/pageA">点我跳转到 a 页面</router-link>
+        <div>
+            <router-link to="/home1">点我切换到 home1 页面</router-link>|
+            <router-link to="/home2">点我跳转到 home2 页面</router-link>
+            <router-view/>
+        </div>
+    </div>
+</template>
+<script>
+    import LifeRecycle from "../life-recycle";
+
+    export default {
+        name: 'home',
+        mixins: [LifeRecycle]
+    }
+</script>
+```
+
+然后修改一下 `router.js` 路由列表：
+
+```js
+import Vue from 'vue'
+import Router from 'vue-router'
+import Home from './views/Home.vue'
+
+Vue.use(Router)
+
+export default new Router({
+  mode: "history",
+  routes: [
+    {
+      path: '/',
+      name: 'home',
+      component: Home,
+      children: [
+        {
+          path: 'home1',
+          name: 'home1',
+          component: () => import(/* webpackChunkName: "about" */ './views/Home1.vue'),
+        },
+        {
+          path: 'home2',
+          name: 'home2',
+          component: () => import(/* webpackChunkName: "about" */ './views/Home2.vue'),
+        }
+      ]
+    },
+    {
+      path: "/pageA",
+      name: "pageA",
+      component: () => import(/* webpackChunkName: "about" */ './views/A.vue')
+    },
+    {
+      path: "/pageB",
+      name: "pageB",
+      component: () => import(/* webpackChunkName: "about" */ './views/B.vue')
+    }
+  ]
+})
+```
+
+一切 ok 后，我们运行一下项目：
+
+```bash
+npm run serve
+```
+
+![1-3](./1-3.gif)
+
+可以看到：
+
+1. 打开 home1 页面
+
+   ```bash
+    created--->home
+    created--->home1
+    activated--->home1
+    activated--->home
+   ```
+
+2. home1 --> home2
+
+   ```bash
+   created--->home2
+   destoryed--->home1
+   ```
+
+3. home2 --> pageA
+
+   ```bash
+   created--->page-a
+   deactivated--->home2
+   deactivated--->home
+   activated--->page-a
+   ```
+
+4. pageA 点击返回
+
+   ```bash
+   deactivated--->page-a
+   activated--->home2
+   activated--->home
+   ```
+
+   此时 `pageA` 失活调用 `deactivated` 方法，然后激活 `home`，而 `home2` 是 `home` 的嵌套页面，所以也直接走了 `activated` 方法被激活，而起作用的原因就是前面所列出的 `router-view` 的这一段代码：
+
+   ```　js
+   ...
+    render (_, { props, children, parent, data }) {
+     ...
+      while (parent && parent._routerRoot !== parent) {
+         const vnodeData = parent.$vnode ? parent.$vnode.data : {}
+         // 获取当前页面的层级数（嵌套路由情况）
+         if (vnodeData.routerView) {
+           depth++
+         }
+         if (vnodeData.keepAlive && parent._directInactive && parent._inactive) {
+           inactive = true
+         }
+         parent = parent.$parent
+       }
+       data.routerViewDepth = depth
+   
+       // render previous view if the tree is inactive and kept-alive
+     	// 如果父组件为非激活状态并且是被缓存的时候，就去渲染之前的组件
+       if (inactive) {
+         const cachedData = cache[name]
+         const cachedComponent = cachedData && cachedData.component
+         if (cachedComponent) {
+           // #2301
+           // pass props
+           if (cachedData.configProps) {
+             fillPropsinData(cachedComponent, data, cachedData.route, cachedData.configProps)
+           }
+           return h(cachedComponent, data, children)
+         } else {
+           // render previous empty view
+           return h()
+         }
+       }
+    }
+   ...
+   ```
+
+   `router-view` 会判断当前组件的父组件是不是 `keep-alive` 的缓存组件，如果是的话，当前页面（home2）离开的时候会把当前 home2 也缓存起来，下次再回到 home2 页面的时候就不会再创建一个 home2 了，而是直接用缓存的组件。
+
+   
+
+   ## 拓展
+
+   在 vue-router 的官网中我们看到这么一段介绍：
+
+   > ## 响应路由参数的变化
+   >
+   > 提醒一下，当使用路由参数时，例如从 `/user/foo` 导航到 `/user/bar`，**原来的组件实例会被复用**。因为两个路由都渲染同个组件，比起销毁再创建，复用则显得更加高效。**不过，这也意味着组件的生命周期钩子不会再被调用**。
+   >
+   > 复用组件时，想对路由参数的变化作出响应的话，你可以简单地 watch (监测变化) `$route` 对象：
+   >
+   > ```js
+   > const User = {
+   >   template: '...',
+   >   watch: {
+   >     $route(to, from) {
+   >       // 对路由变化作出响应...
+   >     }
+   >   }
+   > }
+   > ```
+   >
+   > 或者使用 2.2 中引入的 `beforeRouteUpdate` [导航守卫](https://router.vuejs.org/zh/guide/advanced/navigation-guards.html)：
+   >
+   > ```js
+   > const User = {
+   >   template: '...',
+   >   beforeRouteUpdate (to, from, next) {
+   >     // react to route changes...
+   >     // don't forget to call next()
+   >   }
+   > }
+   > ```
+
+   两个路由都渲染同个组件，比起销毁再创建，复用则显得更加高效。官网是这么介绍的，但是如果放弃这一点点优化，我们硬是要重新创建一个组件怎么做呢？
+
+   比如我们现在的 Demo，我们修改一下代码，让 `pageA` 跟 `pageB` 都共用一个 `pageA` 组件：
+
+   ```js
+   import Vue from 'vue'
+   import Router from 'vue-router'
+   import Home from './views/Home.vue'
+   
+   Vue.use(Router)
+   
+   export default new Router({
+     mode: "history",
+     routes: [
+       {
+         path: '/',
+         name: 'home',
+         component: Home,
+         children: [
+           {
+             path: 'home1',
+             name: 'home1',
+             component: () => import(/* webpackChunkName: "about" */ './views/Home1.vue'),
+           },
+           {
+             path: 'home2',
+             name: 'home2',
+             component: () => import(/* webpackChunkName: "about" */ './views/Home2.vue'),
+           }
+         ]
+       },
+       {
+         path: "/pageA",
+         name: "pageA",
+         component: () => import(/* webpackChunkName: "about" */ './views/A.vue')
+       },
+       {
+         path: "/pageB",
+         name: "pageB",
+         component: () => import(/* webpackChunkName: "about" */ './views/A.vue')
+       }
+     ]
+   })
+   
+   ```
+
+   然后从 `pageA` 页面跳转到 `pageB` 页面的时候，你会发现，没有任何反应，页面并不会被创建，而且继续复用了 pageA，ok，接下来我们看一下 vue 源码中判断是否可以复用的规则是咋样的。
+
+   我们找到 `vue/src/core/vdom/patch.js` 源码中的这么一段代码：
+
+   ```js
+   ...
+   function sameVnode (a, b) {
+     return (
+       a.key === b.key && (
+         (
+           a.tag === b.tag &&
+           a.isComment === b.isComment &&
+           isDef(a.data) === isDef(b.data) &&
+           sameInputType(a, b)
+         ) || (
+           isTrue(a.isAsyncPlaceholder) &&
+           a.asyncFactory === b.asyncFactory &&
+           isUndef(b.asyncFactory.error)
+         )
+       )
+     )
+   }
+   ```
+
+   所以 vue 源码认为，只要 key 一致，并且标签名等条件一直就认为是同一个组件了。
+
+   ok！知道判断条件后，我们来分析一下，我们并没有给页面组件指定 key 值，所以 undefined 是等于 undefined 的，然后 pageA 页面跟 pageB 页面都共用了一个 pageA 组件，所以 tag 名称也是一样的，然后后面的一些判断条件也都成立，所以 vue 认为这两个节点一致，也就不会再创建了，直接复用了，所以你会看到 pageA 点击跳转到 pageB 是没有任何反应的，那么知道原因后我们该怎么处理呢？
+
+   很简单！直接给一个 key 就好了，所以你会在很多 vue 项目中看到这样的操作：
+
+   ```vue
+   <template>
+     <div id="app">
+       <keep-alive>
+         <!-- 设置当前 router-view 的 key 为 path，来解决复用问题 -->
+         <router-view :key="$route.path"/>
+       </keep-alive>
+     </div>
+   </template>
+   ```
+
+   看到这是不是就很能理解这个操作了呢？所以只有对源码知根知底才能解决某些特殊的问题，这也就是看源码的重要性。
+
+   当然，页面少的话抛开 vue 的复用是没啥问题的，多页面大项目的时候考虑内存啥的还是保持官网说的 "比起销毁再创建，复用则显得更加高效" 较好。
+
+   说到这里有小伙伴要疑问了，`<keep-alive>` 组件是怎么来获取缓存的唯一 key 的呢？我们看一下它的做法：
+
+   ```js
+   const key: ?string = vnode.key == null
+           // same constructor may get registered as different local components
+           // so cid alone is not enough (#3269)
+           ? componentOptions.Ctor.cid + (componentOptions.tag ? `::${componentOptions.tag}` : '')
+           : vnode.key // 获取缓存的 key 值
+   ```
+
+    如果开发者有设置 key 值的话就直接用了，没有的话用的是：
+
+   ```js
+   componentOptions.Ctor.cid + (componentOptions.tag ? `::${componentOptions.tag}` : '')
+   ```
+
+   那么 `componentOptions.Ctor.cid` 又是啥呢？Vue 中 `cid` 初始值是 0，每当调用了 `Vue.extend()` 方法后 `cid` 会自动加 1，然后赋值给当前的 vue 组件。
+
+   ## 总结
+
+   ok！写了这么长的内容，虽然不管是解决 vue 组件的复用问题还是 activated 等方法的使用，网上一搜一大把都有对应的方案提供，但是我们得知道为什么要这么做呢？所以这个时候就会强迫你去看源码了，我相信这一圈下来，你一定会有不一样的收获的。
+
+   加油吧，骚年！
+
+   
